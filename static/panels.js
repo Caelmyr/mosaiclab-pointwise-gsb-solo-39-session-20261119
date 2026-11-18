@@ -150,6 +150,7 @@ export function drawChart(canvas, {series, options}) {
   for (const {name,points,color} of series) {
     ctx.lineWidth = 1.7;
     ctx.strokeStyle = color ?? PHASE_COLORS[name] ?? "#bef39c";
+    ctx.fillStyle = ctx.strokeStyle;
     ctx.beginPath();
     let started = false;
     for (const [x,y] of points) {
@@ -158,6 +159,14 @@ export function drawChart(canvas, {series, options}) {
       else { ctx.moveTo(px(x),py(y));started=true; }
     }
     ctx.stroke();
+    if (options.markers) {
+      for (const [x,y] of points) {
+        if (!Number.isFinite(x)||!Number.isFinite(y)) continue;
+        ctx.beginPath();
+        ctx.arc(px(x),py(y),2.4,0,Math.PI*2);
+        ctx.fill();
+      }
+    }
   }
 }
 
@@ -179,10 +188,42 @@ export function sensorEvidence(kind, report) {
     body = `<p>Sensor ${esc(report.axis)} · ${esc(report.unit)}</p>`;
   } else if (kind==="banding") {
     body = table(["Phase","RMS code","Peak period (sites)","Amplitude"],report.phases.map((p)=>[p.phase,number(p.rms_code),number(p.peak_periods[0]?.period_sites),number(p.peak_periods[0]?.amplitude)])) + `<p>${esc(report.warning)}</p>`;
-  } else if (kind==="spatial-noise"||kind==="paired-noise") {
-    const labels=kind==="paired-noise"?["Temporal σ","SNR dB"]:["Row σ","Column σ"];
-    body = table(["Phase","Usable samples","Signal",...labels],report.phases.map((p)=>[p.phase,p.usable,number(p.median_signal,6),number(p.robust_temporal_sigma??p.row_sigma,7),number(p.snr_db??p.column_sigma,6)]));
-    body += `<p>${esc(report.meaning??report.warnings?.join(" "))}</p>`;
+  } else if (kind==="spatial-noise") {
+    body = table(["Phase","Usable samples","Signal","Row σ","Column σ"],report.phases.map((p)=>[p.phase,p.usable,number(p.median_signal,6),number(p.row_sigma,7),number(p.column_sigma,6)]));
+    body += `<p>${esc(report.meaning)}</p>`;
+  } else if (kind==="paired-noise") {
+    const ladder = report.signal_ladder;
+    const series = ladder.phases.map((p)=>{
+      const points=[];
+      for (const band of p.bands) {
+        if (band.gap_before) points.push([band.left_stop, NaN]);
+        points.push([band.center_stop ?? (band.left_stop+band.right_stop)/2, band.usable ? band.robust_temporal_sigma : NaN]);
+      }
+      return {name:p.phase,points};
+    });
+    graph = chart("Temporal σ across the shared signal ladder",series,{zero:true,markers:true});
+    body = table(["Phase","Usable pairs","Median signal","Temporal σ","SNR dB"],report.phases.map((p)=>[p.phase,p.usable,number(p.median_signal,6),number(p.robust_temporal_sigma,7),number(p.snr_db,3)]));
+    body += `<h4>Signal step bands</h4><p>Shared half-stop ladder from saturation · ${esc(number(ladder.step_stops,2))} stop per bin · at least ${esc(ladder.minimum_pairs)} same-site pairs per band. The chart uses the bin-center stop on the horizontal axis.</p>`;
+    const stop = (value) => value == null ? "—" : (+value).toFixed(1);
+    const rows=[];
+    for (const phase of ladder.phases) {
+      for (const band of phase.bands) {
+        const notes=[];
+        if (band.merged) notes.push(`combined ${band.bins} bins`);
+        if (band.gap_before) notes.push("gap before · not joined");
+        if (!band.usable) notes.push(band.reason ?? "unusable");
+        rows.push([phase.phase,`${stop(band.left_stop)} … ${stop(band.right_stop)}`,band.pairs,number(band.robust_temporal_sigma,7),number(band.snr_db,3),notes.join("; ")]);
+      }
+    }
+    body += table(["Phase","Stops","Same-site pairs","Temporal σ","SNR dB","Note"],rows);
+    const gaps = ladder.phases.flatMap((phase)=>phase.gaps.map((gap)=>`${phase.phase} ${stop(gap.left_stop)} … ${stop(gap.right_stop)}`));
+    if (gaps.length) body += `<p>Brightness gaps with no valid pairs: ${esc(gaps.join(", "))}. The curve is broken there and the empty bands are not interpolated across.</p>`;
+    if (!rows.length) body += `<p>No band reached the ${esc(ladder.minimum_pairs)}-pair minimum. Widen the region or choose a brighter gray level; the ladder is left blank rather than filled from black or saturated samples.</p>`;
+    const excluded = ladder.phases.reduce((total,phase)=>total+phase.near_black+phase.near_saturation,0);
+    const black = ladder.phases.reduce((total,phase)=>total+phase.near_black,0);
+    const white = ladder.phases.reduce((total,phase)=>total+phase.near_saturation,0);
+    body += `<p>${excluded} pairs were left out of the ladder: ${black} at or below ${number(ladder.signal_minimum,3)} and ${white} at or above ${number(ladder.signal_maximum,2)} of the phase range. Black-level and saturated samples do not give a reliable σ, so empty bands are left blank rather than bridged.</p>`;
+    body += `<p>${esc(report.warnings.join(" "))}</p>`;
   } else if (kind==="uniformity") {
     body = table(["Phase","Median code","Valid sites","Darkest tile","Brightest tile"],report.per_phase.map((p)=>[p.phase,number(p.median_code,2),p.valid,number(p.low_tile_ratio),number(p.high_tile_ratio)]))+`<p>${esc(report.meaning)}</p>`;
   } else if (kind==="edge") {

@@ -16,6 +16,16 @@ STOPS_MINIMUM = -12.0
 EXPOSURE_LEVELS = (0.05, 0.2, 0.6, 0.9, 0.98, 1.0)
 PERCENTILES = (1.0, 5.0, 25.0, 50.0, 75.0, 95.0, 99.0)
 MIN_PROFILE_SITES = 6
+# Paired-noise samples too close to black or saturation do not carry a reliable estimate.
+NOISE_SIGNAL_MINIMUM = 0.005
+NOISE_SIGNAL_MAXIMUM = 0.98
+MIN_PAIR_SAMPLES = 10
+# One common ladder of half-stop signal bins is shared by all four Bayer phases.
+LADDER_STOP_STEP = 0.5
+# The ladder floor follows the signal floor so no valid pair falls outside the bins.
+LADDER_STOP_MINIMUM = float(np.floor(np.log2(NOISE_SIGNAL_MINIMUM)))
+LADDER_STOP_MAXIMUM = 0.0
+MIN_LADDER_PAIRS = 32
 
 
 def number(value, decimals: int = 6) -> float | None:
@@ -368,10 +378,11 @@ def _matched_cfa(left: Frame, right: Frame, region: Box) -> tuple[Box, Box]:
 
 
 def _noise_from_pair(left: np.ndarray, right: np.ndarray) -> dict:
-    good = (left > 0.005) & (right > 0.005) & (left < 0.98) & (right < 0.98)
+    good = (left > NOISE_SIGNAL_MINIMUM) & (right > NOISE_SIGNAL_MINIMUM) & (
+        left < NOISE_SIGNAL_MAXIMUM) & (right < NOISE_SIGNAL_MAXIMUM)
     a = left[good]
     b = right[good]
-    if a.size < 10:
+    if a.size < MIN_PAIR_SAMPLES:
         return {"usable": int(a.size), "usable_estimate": False}
     delta = a - b
     center = float(np.median(delta))
@@ -391,6 +402,111 @@ def _noise_from_pair(left: np.ndarray, right: np.ndarray) -> dict:
     }
 
 
+def _ladder_edges() -> np.ndarray:
+    steps = int(round((LADDER_STOP_MAXIMUM - LADDER_STOP_MINIMUM) / LADDER_STOP_STEP))
+    return LADDER_STOP_MINIMUM + LADDER_STOP_STEP * np.arange(steps + 1)
+
+
+def _band_estimate(delta: np.ndarray, common: np.ndarray, stops: np.ndarray) -> dict:
+    center = float(np.median(delta))
+    noise = float(np.median(np.abs(delta - center)) * (1.4826 / np.sqrt(2)))
+    mean = float(np.median(common))
+    standard = float(np.std(delta, dtype=np.float64) / np.sqrt(2))
+    return {
+        "median_signal": number(mean),
+        "center_stop": number(float(np.median(stops)), 3),
+        "relative_offset": number(center),
+        "robust_temporal_sigma": number(noise, 9),
+        "rms_temporal_sigma": number(standard, 9),
+        "snr_db": number(20 * np.log10(mean / noise), 3) if noise > 0 else None,
+    }
+
+
+def _ladder_bands(
+    delta: np.ndarray, common: np.ndarray, stops: np.ndarray, bins: np.ndarray, edges: np.ndarray,
+) -> list[dict]:
+    counts = np.bincount(bins, minlength=len(edges) - 1)
+    occupied = np.flatnonzero(counts)
+    if occupied.size == 0:
+        return []
+    runs = []
+    start = previous = int(occupied[0])
+    for index in occupied[1:]:
+        index = int(index)
+        if index == previous + 1:
+            previous = index
+            continue
+        runs.append((start, previous))
+        start = previous = index
+    runs.append((start, previous))
+    bands = []
+    for first, last in runs:
+        groups = []
+        index = first
+        while index <= last:
+            group = [index]
+            total = int(counts[index])
+            index += 1
+            while total < MIN_LADDER_PAIRS and index <= last:
+                group.append(index)
+                total += int(counts[index])
+                index += 1
+            groups.append(group)
+        # A short tail is folded into the preceding band; a short lone run stays flagged.
+        if len(groups) > 1 and sum(int(counts[index]) for index in groups[-1]) < MIN_LADDER_PAIRS:
+            groups[-2].extend(groups.pop())
+        for group in groups:
+            mask = np.isin(bins, group)
+            selected = int(np.count_nonzero(mask))
+            band = {
+                "left_stop": number(float(edges[group[0]])),
+                "right_stop": number(float(edges[group[-1] + 1])),
+                "bins": len(group),
+                "merged": len(group) > 1,
+                "pairs": selected,
+                "usable": selected >= MIN_LADDER_PAIRS,
+            }
+            if band["usable"]:
+                band.update(_band_estimate(delta[mask], common[mask], stops[mask]))
+            else:
+                band["reason"] = "too few same-site pairs"
+            bands.append(band)
+    for previous, band in zip(bands, bands[1:]):
+        band["gap_before"] = bool(
+            band["left_stop"] > previous["right_stop"]
+        )
+    return bands
+
+
+def _ladder_gaps(bands: list[dict]) -> list[dict]:
+    return [
+        {"left_stop": previous["right_stop"], "right_stop": band["left_stop"]}
+        for previous, band in zip(bands, bands[1:])
+        if band["gap_before"]
+    ]
+
+
+def _signal_ladder(a: np.ndarray, b: np.ndarray) -> dict:
+    edges = _ladder_edges()
+    low = (a <= NOISE_SIGNAL_MINIMUM) | (b <= NOISE_SIGNAL_MINIMUM)
+    high = (a >= NOISE_SIGNAL_MAXIMUM) | (b >= NOISE_SIGNAL_MAXIMUM)
+    good = ~(low | high)
+    excluded = {
+        "near_black": int(np.count_nonzero(low & ~high)),
+        "near_saturation": int(np.count_nonzero(high)),
+        "pairs_used": int(np.count_nonzero(good)),
+    }
+    a = a[good]
+    b = b[good]
+    if a.size == 0:
+        return {"bands": [], "gaps": [], **excluded}
+    common = (a + b) * 0.5
+    stops = np.log2(common)
+    bins = np.clip(np.digitize(stops, edges) - 1, 0, len(edges) - 2)
+    bands = _ladder_bands(a - b, common, stops, bins, edges)
+    return {"bands": bands, "gaps": _ladder_gaps(bands), **excluded}
+
+
 def paired_noise_report(left: Frame, right: Frame, region: Box) -> dict:
     if left.id == right.id:
         raise InputError("Select two distinct captures of the same static scene.")
@@ -408,16 +524,27 @@ def paired_noise_report(left: Frame, right: Frame, region: Box) -> dict:
     a = phase_planes(normalized_source(left), left.sensor.layout, region_left)
     b = phase_planes(normalized_source(right), right.sensor.layout, region_right)
     phases = []
+    ladder = []
     for first, second in zip(a, b):
         info = _noise_from_pair(first.samples, second.samples)
         info["phase"] = first.name
         phases.append(info)
+        ladder.append({"phase": first.name, **_signal_ladder(first.samples, second.samples)})
     return {
         "left_id": left.id,
         "right_id": right.id,
         "left_box": region_left.as_dict(),
         "right_box": region_right.as_dict(),
         "phases": phases,
+        "signal_ladder": {
+            "step_stops": LADDER_STOP_STEP,
+            "stop_minimum": LADDER_STOP_MINIMUM,
+            "stop_maximum": LADDER_STOP_MAXIMUM,
+            "minimum_pairs": MIN_LADDER_PAIRS,
+            "signal_minimum": NOISE_SIGNAL_MINIMUM,
+            "signal_maximum": NOISE_SIGNAL_MAXIMUM,
+            "phases": ladder,
+        },
         "warnings": [
             *warnings, "Motion, changing illumination and registration errors inflate the estimates.",
         ],
