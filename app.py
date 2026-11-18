@@ -240,6 +240,15 @@ def create_app(data: Path | None = None) -> Flask:
         artifact = engine.execute(engine.color_target_download, frame, state, values.get("patches"), extension)
         return send_artifact(artifact)
 
+    @app.post("/api/projects/<project>/matrix-fit")
+    def matrix_fit(project):
+        values, frame, state = inspect_payload(project, "patches", "neutral_references")
+        report, settings = engine.execute(
+            engine.fit_matrix, frame, state, values.get("patches"),
+            values.get("neutral_references"),
+        )
+        return jsonify({"report": report, "settings": settings})
+
     @app.post("/api/projects/<project>/compare")
     def compare(project):
         values, frame, state = inspect_payload(project, "sensor_probe")

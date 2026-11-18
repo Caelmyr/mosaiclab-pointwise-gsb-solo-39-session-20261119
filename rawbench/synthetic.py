@@ -45,6 +45,7 @@ PATCHES = (
 )
 BASE_BLACK = (96.0, 101.0, 102.0, 111.0)
 BASE_WHITE = (3970.0, 4035.0, 3998.0, 3925.0)
+RAMP_STOPS = (41, 63, 94, 131, 165, 204, 229)
 TEXT_LIGHT = (229, 231, 219)
 TEXT_MUTED = (165, 183, 173)
 INK = (18, 29, 24)
@@ -120,7 +121,7 @@ def _target_rgb(width: int, height: int) -> np.ndarray:
         draw.line((left, gray_top, left, 317), hue, width=2)
     _text(draw, (239, 324), "CHROMA FREQUENCY", 9, TEXT_MUTED)
     draw.rectangle((464, 90, 506, 317), fill=(15, 26, 19))
-    for index, stop in enumerate((41, 63, 94, 131, 165, 204, 229)):
+    for index, stop in enumerate(RAMP_STOPS):
         top = 98 + 30 * index
         draw.rectangle((472, top, 496, top + 23), fill=(stop, stop, stop))
     base = srgb_decode(np.asarray(image, dtype=np.float32) / 255)

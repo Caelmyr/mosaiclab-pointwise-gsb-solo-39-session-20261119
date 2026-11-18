@@ -15,7 +15,7 @@ For a direct launch with Python 3.11 or 3.12, install `requirements.txt` in a lo
 
 ## Start with a sample
 
-- The **Color and neutral target** opens on first access. Switch to **Inspect** and run **Color target audit** to compare its 18 synthetic patches and download the report. The **Neutral reference** region can also set the development white balance.
+- The **Color and neutral target** opens on first access. Switch to **Inspect** and run **Color target audit** to compare its 18 synthetic patches and download the report. The **Neutral reference** region can also set the development white balance. Use **Fit color matrix** in the same panel to fit a Custom 3×3 camera matrix from the swatches: white balance and exposure stay fixed, gray patches are protected, and the replacement is only accepted (and saved as the *Fitted color matrix* recipe) when held-out colored and neutral patches also improve; otherwise the current matrix is kept.
 - Open **Resolution field** from **Samples**. Choose the **Slanted edge** region under **Inspect** to measure the luminance MTF or the native RAW chromatic edge offset in sensor pixels. The sample is designed to show near-zero chromatic displacement.
 - Open **Low-light readout** to compare two repeat captures. Choose the **Uniform readout strip** for row-periodicity and paired-noise measurements.
 - Open **Exposure ladder pair** to inspect clipping and headroom at each phase. Use **Compare** to inspect the overlapping registered developments.

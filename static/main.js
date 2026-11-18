@@ -1,6 +1,6 @@
 import {
   actions, check, comparisonEvidence, comparisonPanel, developPanel, drawChart, escape, facts, fields,
-  input, inspectPanel, number, probeEvidence, select, sensorEvidence, table,
+  input, inspectPanel, matrixFitEvidence, number, probeEvidence, select, sensorEvidence, table,
 } from "./panels.js";
 
 const $ = (id) => document.getElementById(id);
@@ -283,6 +283,41 @@ function bindInspect() {
     }
   };
   bind("measure",()=>runMeasurement());
+  bind("fit-matrix",()=>fitMatrix());
+}
+
+function chartPatches() {
+  const patches=state.project.chart_swatches ?? [];
+  if (patches.length) return patches;
+  const hex=state.inspection.measurement_options.target_color.slice(1);
+  const rgb=hex.match(/../g).map((item)=>parseInt(item,16)/255);
+  if (!state.inspection.region) throw new Error("Select a swatch region first.");
+  return [{name:"Selected patch",region:state.inspection.region,srgb:rgb}];
+}
+
+async function fitMatrix() {
+  const inspection=state.inspection;
+  const context=JSON.stringify(inspection);
+  try {
+    const patches=chartPatches();
+    const data=await post("/matrix-fit",{patches});
+    if (state.tab!=="inspect"||state.inspection!==inspection||JSON.stringify(inspection)!==context) return;
+    const report=data.report;
+    if (report.matrix_replaced) {
+      state.inspection.settings.matrix_name="custom";
+      state.inspection.settings.custom_matrix=report.custom_matrix;
+      paintControls();
+      await refreshPreview();
+      await updateDetail();
+      status(`Color matrix replaced and recipe "${report.saved_recipe.title}" saved.`);
+    } else {
+      status(report.decision==="rejected-holdout"
+        ? "Holdout check failed: existing color matrix kept."
+        : "No gray-preserving fit improved the colored patches: existing matrix kept.", true);
+    }
+    state.result={type:"matrix-fit",data};
+    paintEvidence();
+  } catch(error) { failed(error); }
 }
 
 function pullMeasure() {
@@ -308,13 +343,7 @@ async function runMeasurement() {
   try {
     let result, patches;
     if (kind==="color-audit") {
-      patches=state.project.chart_swatches ?? [];
-      if (!patches.length) {
-        const hex=options.target_color.slice(1);
-        const rgb=hex.match(/../g).map((item)=>parseInt(item,16)/255);
-        if (!state.inspection.region) throw new Error("Select a swatch region first.");
-        patches=[{name:"Selected patch",region:state.inspection.region,srgb:rgb}];
-      }
+      patches=chartPatches();
       result=await post("/color-audit",{patches});
     } else {
       result=await post("/measure",{kind});
@@ -412,6 +441,8 @@ function paintEvidence() {
     wrap.innerHTML=probeEvidence(result.data);
   } else if (result.type==="comparison") {
     wrap.innerHTML=comparisonEvidence(result.data);
+  } else if (result.type==="matrix-fit") {
+    wrap.innerHTML=matrixFitEvidence(result.data);
   } else {
     const resultView=sensorEvidence(result.kind,result.data);
     wrap.innerHTML=resultView.html;

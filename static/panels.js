@@ -90,6 +90,8 @@ export function inspectPanel(state, project, prefs) {
     options = project.chart_swatches?.length
       ? `<p>Measures the 18 printed patches in the synthetic color target.</p>`
       : `<p>Draw one color patch and enter its reference sRGB color.</p>${input("target-color","Reference color",prefs.target_color,"color")}`;
+    options += `<p class="fit-hint">Fit color matrix keeps the current white balance and exposure, protects gray swatches, and validates on held-out patches before replacing the Custom matrix and saving a recipe.</p>`;
+    options += actions([["fit-matrix", "Fit color matrix"]]);
   }
   return `<h2 class="control-heading">Sensor measurements</h2>${group("Selected region",regionPanel(state.region, project.suggested_regions))}
     ${group("Measurement",select("measurement","Analysis",MEASURES,kind)+options+actions([["measure","Measure",true]]))}
@@ -226,4 +228,56 @@ export function comparisonEvidence(data) {
   const rows=data.channels.map((x)=>[x.channel,number(x.mean_error),number(x.mean_absolute_error),number(x.rmse)]);
   return `<h3>Registered comparison</h3><p>Shared sensor region ${s.x}, ${s.y} · ${s.width} × ${s.height} · ${esc(data.space)}</p>${table(["Channel","Mean","MAE","RMSE"],rows)}
     <p>${number(data.over_threshold,0)} pixels exceed ${data.threshold}. ${esc(data.notices.join(" "))}</p>`;
+}
+
+export function matrixFitEvidence(data) {
+  const r = data.report;
+  const replaced = r.decision === "accepted";
+  const status = replaced ? "Matrix replaced and recipe saved"
+    : r.decision === "rejected-holdout" ? "Holdout failed — existing matrix kept"
+    : "No safe candidate — existing matrix kept";
+  const head = `<h3>Color matrix fit</h3>
+    <p class="fit-status ${replaced ? "ok" : "warn"}"><strong>${esc(status)}</strong></p>
+    <p>${esc(r.reason)}</p>
+    ${facts([
+      ["White balance kept", r.white_balance.map((v) => number(v, 4)).join(" / ")],
+      ["Exposure kept", `${number(r.exposure_ev, 2)} EV`],
+      ["Selected candidate", r.selected_label],
+      ["Saved recipe", r.saved_recipe ? esc(r.saved_recipe.title) : "—"],
+    ])}`;
+  const split = `<h4>Patch split (seed ${r.split.seed})</h4>
+    <p><strong>Training / selection</strong><br>${r.split.training.map(esc).join(", ")}</p>
+    <p><strong>Holdout (never fit)</strong><br>${r.split.holdout.map(esc).join(", ")}</p>`;
+  const compare = `<h4>Holdout error: current → final</h4>
+    ${table(["Metric", "Current", "Final"], [
+      ["Chroma ΔE₀₀ median", number(r.baseline.holdout.chroma_median, 3), number(r.final.holdout.chroma_median, 3)],
+      ["Chroma ΔE₀₀ worst", number(r.baseline.holdout.chroma_max, 3), number(r.final.holdout.chroma_max, 3)],
+      ["Neutral ΔE₀₀ median", number(r.baseline.holdout.neutral_median, 3), number(r.final.holdout.neutral_median, 3)],
+      ["Neutral ΔE₀₀ worst", number(r.baseline.holdout.neutral_max, 3), number(r.final.holdout.neutral_max, 3)],
+    ])}
+    <h4>Training / selection error</h4>
+    ${table(["Metric", "Current", "Final"], [
+      ["Chroma ΔE₀₀ median", number(r.baseline.training.chroma_median, 3), number(r.final.training.chroma_median, 3)],
+      ["Chroma ΔE₀₀ worst", number(r.baseline.training.chroma_max, 3), number(r.final.training.chroma_max, 3)],
+      ["Neutral ΔE₀₀ median", number(r.baseline.training.neutral_median, 3), number(r.final.training.neutral_median, 3)],
+      ["Neutral ΔE₀₀ worst", number(r.baseline.training.neutral_max, 3), number(r.final.training.neutral_max, 3)],
+    ])}`;
+  const ladder = `<h4>Candidate ladder</h4>${table(
+    ["Candidate", "Valid", "Train C med", "Train N med", "Hold C med", "Hold N med"],
+    r.candidates.map((c) => [
+      c.label, c.valid ? "yes" : "no",
+      c.training ? number(c.training.chroma_median, 2) : "—",
+      c.training ? number(c.training.neutral_median, 2) : "—",
+      c.holdout ? number(c.holdout.chroma_median, 2) : "—",
+      c.holdout ? number(c.holdout.neutral_median, 2) : "—",
+    ]),
+  )}`;
+  const patches = `<h4>Holdout patches</h4>${table(
+    ["Patch", "Kind", "Final ΔE₀₀"],
+    r.final.holdout_patches.map((p) => [p.name, p.kind, number(p.delta_e2000, 3)]),
+  )}`;
+  const matrix = replaced
+    ? `<h4>Fitted custom matrix</h4><div class="matrix-grid">${r.custom_matrix.map((v) => `<span>${number(v, 4)}</span>`).join("")}</div>`
+    : "";
+  return head + split + compare + ladder + patches + matrix;
 }

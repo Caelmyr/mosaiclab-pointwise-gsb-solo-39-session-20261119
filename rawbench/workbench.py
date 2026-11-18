@@ -26,6 +26,9 @@ from .domain import (
     integer, object_value, optional_id, reject_unknown, sensor_compatible,
 )
 from .mask_audit import defect_map_report
+from .matrix_fit import (
+    color_target_neutral_references, fit_color_matrix, read_neutral_references,
+)
 from .optics import EdgeSettings, edge_report, uniformity_report
 from .storage import Catalog
 from .synthetic import BLUEPRINTS, chart_swatches, make_demo, suggested_regions
@@ -41,6 +44,7 @@ MEASUREMENT_KINDS = (
 MAX_PARALLEL_OPERATIONS = 2
 INSPECTION_TOOLS = (*MEASUREMENT_KINDS, "color-audit")
 COLOR_HEX = re.compile(r"#[0-9a-fA-F]{6}\Z")
+FITTED_RECIPE_TITLE = "Fitted color matrix"
 
 
 @dataclass(frozen=True)
@@ -386,6 +390,30 @@ class Processing:
             "result": report,
         }
         return Artifact("color-target-audit.json", json_bytes(document), "application/json")
+
+    def fit_matrix(
+        self, frame: Frame, state: InspectionState, patches, neutral_payload
+    ) -> tuple[dict, dict]:
+        neutral_refs = read_neutral_references(
+            neutral_payload, frame.raster.width, frame.raster.height
+        )
+        if not neutral_refs and self.catalog.describe(frame.project).get("demo_key") == "color-target":
+            neutral_refs = color_target_neutral_references()
+        developed = self._development(frame, state.settings)
+        report = fit_color_matrix(developed, patches, neutral_refs)
+        saved = None
+        if report["matrix_replaced"]:
+            settings = state.settings.as_dict()
+            settings["matrix_name"] = "custom"
+            settings["custom_matrix"] = report["custom_matrix"]
+            # Re-running a fit replaces the previous auto-saved recipe instead
+            # of accumulating one recipe per attempt.
+            for recipe in self.catalog.describe(frame.project).get("recipes", []):
+                if recipe["title"] == FITTED_RECIPE_TITLE:
+                    self.catalog.remove_recipe(frame.project, recipe["id"])
+            saved = self.catalog.add_recipe(frame.project, FITTED_RECIPE_TITLE, settings)
+            report["saved_recipe"] = {"id": saved["id"], "title": saved["title"]}
+        return report, state.settings.as_dict()
 
     def comparison_preview(self, frame: Frame, state: InspectionState, cursor: Probe | None) -> dict:
         result = self._comparison(frame, state)
