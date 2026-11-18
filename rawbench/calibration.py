@@ -16,6 +16,11 @@ PHASE_CROSS = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=np.float32)
 PHASE_SQUARE = np.ones((3, 3), dtype=np.float32)
 PHASE_SQUARE[1, 1] = 0
 
+MIN_ROW_OFFSET_SAMPLES = 6
+ROW_OFFSET_CLIP = 4.0
+ROW_OFFSET_TOLERANCE_FLOOR = 1.5
+ROW_OFFSET_LIST_LIMIT = 64
+
 
 @dataclass(frozen=True)
 class CalibrationSettings:
@@ -26,6 +31,7 @@ class CalibrationSettings:
     flat_floor: float = 0.06
     repair_detected: bool = False
     defect_threshold: float = 12.0
+    row_offset_ob: bool = False
 
     @classmethod
     def read(cls, value) -> CalibrationSettings:
@@ -33,7 +39,7 @@ class CalibrationSettings:
         reject_unknown(
             obj,
             ("dark_id", "flat_id", "defects_id", "scale_dark_exposure", "flat_floor",
-             "repair_detected", "defect_threshold"),
+             "repair_detected", "defect_threshold", "row_offset_ob"),
             "calibration",
         )
         return cls(
@@ -44,6 +50,7 @@ class CalibrationSettings:
             finite(obj.get("flat_floor", 0.06), "Flat floor", 0.001, 0.9),
             flag(obj.get("repair_detected", False), "Repair detected outliers"),
             finite(obj.get("defect_threshold", 12), "Defect threshold", 3, 80),
+            flag(obj.get("row_offset_ob", False), "Row offset from masked columns"),
         )
 
     def as_dict(self) -> dict:
@@ -55,6 +62,7 @@ class CalibrationSettings:
             "flat_floor": self.flat_floor,
             "repair_detected": self.repair_detected,
             "defect_threshold": self.defect_threshold,
+            "row_offset_ob": self.row_offset_ob,
         }
 
     def references(self) -> dict[str, str]:
@@ -76,6 +84,7 @@ class Correction:
     flat_invalid: np.ndarray
     original_clipped: np.ndarray
     gain_map: np.ndarray | None
+    row_offset: np.ndarray | None
     active: Box
     layout: Layout
     report: dict
@@ -105,6 +114,112 @@ def code_offsets(frame: Frame) -> tuple[np.ndarray, np.ndarray]:
 def normalized_source(frame: Frame) -> np.ndarray:
     signal, full_scale = code_offsets(frame)
     return signal / full_scale
+
+
+def _sensor_rows(layout: Layout, first_row: int, count: int) -> np.ndarray:
+    return layout.origin_y + first_row + 2 * np.arange(count)
+
+
+def estimate_row_offsets(frame: Frame, signal: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Estimate one offset per sensor row and CFA phase from optically black columns.
+
+    Only columns outside the active area contribute, so scene content never biases
+    the estimate. Each phase keeps its own mean level: the correction is the
+    row-to-row deviation of the masked columns, not their absolute value. Rows
+    with too few clean masked samples are left unchanged and reported.
+    """
+    layout = frame.sensor.layout
+    active = frame.sensor.active
+    height, width = signal.shape
+    strips = []
+    if active.x > 0:
+        strips.append(("left", slice(0, active.x)))
+    if active.right < width:
+        strips.append(("right", slice(active.right, width)))
+    correction = np.zeros(signal.shape, dtype=np.float32)
+    report = {
+        "enabled": True,
+        "strips": [
+            {"side": side, "columns": part.stop - part.start} for side, part in strips
+        ],
+        "min_samples_per_row": MIN_ROW_OFFSET_SAMPLES,
+        "clip_sigma": ROW_OFFSET_CLIP,
+        "phases": [],
+        "uncorrected_row_count": 0,
+        "rows_not_corrected": [],
+        "warnings": [],
+    }
+    if not strips:
+        report["warnings"].append(
+            "No optically black columns outside the active area; rows left unchanged."
+        )
+        report["uncorrected_row_count"] = height
+        report["rows_not_corrected"] = (
+            layout.origin_y + np.arange(height)[:ROW_OFFSET_LIST_LIMIT]
+        ).tolist()
+        return correction, report
+    masked = np.zeros((height, width), dtype=bool)
+    for _side, part in strips:
+        masked[:, part] = True
+    uncorrected = np.zeros(height, dtype=bool)
+    for phase in range(4):
+        name = layout.phase_name(phase)
+        rows_at, columns_at = layout.phase_slice(phase)
+        plane = signal[rows_at, columns_at]
+        usable_columns = masked[rows_at, columns_at].any(axis=0)
+        samples = plane[:, usable_columns]
+        per_row = samples.shape[1]
+        sensor_rows = _sensor_rows(layout, rows_at.start, plane.shape[0])
+        entry = {
+            "phase": name,
+            "ob_samples_per_row": int(per_row),
+            "rows_corrected": 0,
+            "outlier_samples_rejected": 0,
+            "median_offset_code": None,
+            "rms_offset_code": None,
+            "rows_not_corrected": [],
+        }
+        report["phases"].append(entry)
+        if per_row < MIN_ROW_OFFSET_SAMPLES:
+            report["warnings"].append(
+                f"Only {per_row} masked {name} samples per row; {name} rows left unchanged."
+            )
+            entry["rows_not_corrected"] = sensor_rows[:ROW_OFFSET_LIST_LIMIT].tolist()
+            uncorrected[sensor_rows - layout.origin_y] = True
+            continue
+        center = np.median(samples, axis=1)
+        spread = np.median(np.abs(samples - center[:, None]), axis=1)
+        tolerance = np.maximum(
+            ROW_OFFSET_CLIP * 1.4826 * spread, ROW_OFFSET_TOLERANCE_FLOOR
+        )
+        inlier = np.abs(samples - center[:, None]) <= tolerance[:, None]
+        count = inlier.sum(axis=1)
+        good = count >= MIN_ROW_OFFSET_SAMPLES
+        offset = np.zeros(plane.shape[0], dtype=np.float64)
+        offset[good] = (
+            np.where(inlier, samples, 0.0)[good].sum(axis=1) / count[good]
+        )
+        entry["outlier_samples_rejected"] = int(samples.size - inlier.sum())
+        entry["rows_corrected"] = int(np.count_nonzero(good))
+        if good.any():
+            # Keep the phase's own pedestal so relative phase levels are preserved.
+            offset[good] -= offset[good].mean()
+            entry["median_offset_code"] = round(float(np.median(np.abs(offset[good]))), 4)
+            entry["rms_offset_code"] = round(float(np.sqrt(np.mean(offset[good] ** 2))), 4)
+        missing = sensor_rows[~good]
+        entry["rows_not_corrected"] = missing[:ROW_OFFSET_LIST_LIMIT].tolist()
+        uncorrected[missing - layout.origin_y] = True
+        plane_correction = np.zeros(plane.shape, dtype=np.float32)
+        plane_correction[good, :] = offset[good][:, None].astype(np.float32)
+        correction[rows_at, columns_at] = plane_correction
+    if not any(item["rows_corrected"] for item in report["phases"]):
+        report["warnings"].append("No usable masked samples; the capture is unchanged.")
+    missing_rows = np.flatnonzero(uncorrected)
+    report["uncorrected_row_count"] = int(missing_rows.size)
+    report["rows_not_corrected"] = (
+        layout.origin_y + missing_rows[:ROW_OFFSET_LIST_LIMIT]
+    ).tolist()
+    return correction, report
 
 
 def dark_exposure_ratio(
@@ -264,6 +379,12 @@ def calibrate(
             messages.append("The dark reference contains saturated samples.")
         corrected -= dark_signal * ratio
 
+    row_offsets = None
+    row_offset_report = None
+    if settings.row_offset_ob:
+        row_offsets, row_offset_report = estimate_row_offsets(scene, corrected)
+        corrected -= row_offsets
+
     gain = None
     valid = np.ones(source.shape, dtype=bool)
     flat_stats = None
@@ -306,12 +427,13 @@ def calibrate(
         "dark_ratio": ratio,
         "flat_phases": flat_stats,
         "detected": detected_report,
+        "row_offset": row_offset_report,
         "counts": counts,
         "warnings": messages,
     }
     return Correction(
         linear, source, valid, repaired, flat_invalid, clipped, gain,
-        area, scene.sensor.layout, report,
+        row_offsets, area, scene.sensor.layout, report,
     )
 
 

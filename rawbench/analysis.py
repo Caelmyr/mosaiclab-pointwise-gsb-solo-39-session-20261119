@@ -7,7 +7,7 @@ import numpy as np
 from scipy import ndimage
 
 from .calibration import Correction, normalized_source
-from .cfa import phase_planes
+from .cfa import phase_field, phase_planes
 from .domain import Box, Frame, InputError
 
 PROFILE_AXES = ("rows", "columns")
@@ -267,14 +267,37 @@ def _bin_trace(trace: Trace, limit: int) -> dict:
     }
 
 
-def profile_report(frame: Frame, region: Box, axis: str, normalized: bool, limit: int = 350) -> dict:
+def profile_report(
+    frame: Frame,
+    region: Box,
+    axis: str,
+    normalized: bool,
+    correction: Correction | None = None,
+    limit: int = 350,
+) -> dict:
     values = normalized_source(frame) if normalized else None
-    return {
+    report = {
         "region": region.as_dict(),
         "axis": axis,
         "unit": "fraction of phase range" if normalized else "code",
         "traces": [_bin_trace(trace, limit) for trace in profile_traces(frame, region, axis, values)],
     }
+    if correction is not None:
+        if normalized:
+            calibrated_values = correction.linear
+        else:
+            # Express the calibrated signal in the original code scale.
+            black = phase_field(correction.linear.shape, correction.layout, frame.sensor.black)
+            white = phase_field(correction.linear.shape, correction.layout, frame.sensor.white)
+            calibrated_values = correction.linear * (white - black) + black
+        report["calibrated"] = {
+            "traces": [
+                _bin_trace(trace, limit)
+                for trace in profile_traces(frame, region, axis, calibrated_values)
+            ],
+            "row_offset": correction.report.get("row_offset"),
+        }
+    return report
 
 
 def _detrend_trace(trace: Trace) -> tuple[np.ndarray, np.ndarray]:

@@ -245,6 +245,7 @@ function developChange(event) {
   for (const role of ["dark","flat","defects"]) c[`${role}_id`]=value(`ref-${role}`,c[`${role}_id`])||null;
   c.scale_dark_exposure=checked("scale-dark",c.scale_dark_exposure);
   c.repair_detected=checked("repair",c.repair_detected);
+  c.row_offset_ob=checked("row-offset-ob",c.row_offset_ob);
   c.flat_floor=numeric("flat-floor",c.flat_floor);
   c.defect_threshold=numeric("defect-threshold",c.defect_threshold);
   state.inspection.view.calibration_layer=value("cal-map",state.inspection.view.calibration_layer);
@@ -293,7 +294,7 @@ function pullMeasure() {
   prefs.normalized_profile=checked("profile-normalized",prefs.normalized_profile);
   prefs.pair_id=value("pair-id",prefs.pair_id)||null;
   prefs.tiles=numeric("uniformity-tiles",prefs.tiles);
-  prefs.corrected=checked("corrected-region",prefs.corrected);
+  prefs.corrected=checked("corrected-region",checked("corrected-profile",prefs.corrected));
   prefs.edge.orientation=value("edge-orientation",prefs.edge.orientation);
   prefs.include_developed=checked("develop-probe",prefs.include_developed);
   prefs.target_color=value("target-color",prefs.target_color);

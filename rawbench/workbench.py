@@ -319,7 +319,10 @@ class Processing:
         if kind == "histogram":
             return exposure_histogram(frame, region, space=options.space, bins=options.bins)
         if kind == "profile":
-            return profile_report(frame, region, options.axis, options.normalized_profile)
+            correction = self._correction(frame, state.settings) if options.corrected else None
+            return profile_report(
+                frame, region, options.axis, options.normalized_profile, correction
+            )
         if kind == "banding":
             return banding_report(frame, region, options.axis)
         if kind == "spatial-noise":

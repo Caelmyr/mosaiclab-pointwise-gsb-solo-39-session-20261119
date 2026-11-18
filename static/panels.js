@@ -55,6 +55,7 @@ export function developPanel(state, refs) {
       input("contrast", "Contrast", value.contrast, "number", "min='.25' max='3' step='.05'"), input("saturation", "Saturation", value.saturation, "number", "min='0' max='2.5' step='.05'"),
       ], "pair") + select("profile", "Export gamut", [["srgb","sRGB"],["display-p3","Display P3"]], value.profile), true)}
     ${group("Sensor calibration", refsHtml + check("scale-dark", "Scale dark exposure", value.calibration.scale_dark_exposure) + check("repair", "Detect isolated outliers", value.calibration.repair_detected) +
+      check("row-offset-ob", "Row offset from masked columns", value.calibration.row_offset_ob) +
       fields([input("flat-floor","Flat floor",value.calibration.flat_floor,"number","step='.01'"),input("defect-threshold","Outlier threshold",value.calibration.defect_threshold,"number","step='1'")],"pair") +
       select("cal-map","Calibration map",[["corrected","Corrected intensity"],["gain","Flat gain"],["defects","Repaired sites"],["validity","Site validity"]],state.view.calibration_layer), true)}
     ${group("Develop recipe",actions([["save-recipe", "Save recipe"], ["clear-settings", "Reset"]]))}`;
@@ -74,7 +75,7 @@ export function inspectPanel(state, project, prefs) {
     options = select("hist-space","Scale",[["linear","Linear"],["stops","Stops from saturation"]],prefs.space) + select("hist-bins","Bins",[16,32,64,128,256],prefs.bins);
   } else if (kind === "profile" || kind === "banding") {
     options = select("axis","Trace lines",[["rows","Sensor rows"],["columns","Sensor columns"]],prefs.axis);
-    if (kind === "profile") options += check("profile-normalized","Normalize by phase range",prefs.normalized_profile);
+    if (kind === "profile") options += check("profile-normalized","Normalize by phase range",prefs.normalized_profile) + check("corrected-profile","Overlay calibrated traces",prefs.corrected);
   } else if (kind === "paired-noise") {
     options = select("pair-id","Repeat capture",[["","Choose a capture"],...project.frames.filter((item) => item.id!==state.frame_id && item.role==="scene").map((item)=>[item.id,item.name])],prefs.pair_id??"");
   } else if (kind === "uniformity") {
@@ -147,9 +148,10 @@ export function drawChart(canvas, {series, options}) {
       ctx.fillText(number(x,2),Math.min(px(x),width-30),height-7);
     }
   }
-  for (const {name,points,color} of series) {
+  for (const {name,points,color,dash} of series) {
     ctx.lineWidth = 1.7;
     ctx.strokeStyle = color ?? PHASE_COLORS[name] ?? "#bef39c";
+    ctx.setLineDash(dash ?? []);
     ctx.beginPath();
     let started = false;
     for (const [x,y] of points) {
@@ -159,6 +161,24 @@ export function drawChart(canvas, {series, options}) {
     }
     ctx.stroke();
   }
+  ctx.setLineDash([]);
+}
+
+function rowOffsetEvidence(row) {
+  if (!row) return "";
+  const strips=(row.strips??[]).map((s)=>`${s.side} ${s.columns}`).join(" · ")||"none";
+  let html=`<h4>Row offset from masked columns</h4>${facts([
+    ["Masked columns",strips],["Minimum samples per row",row.min_samples_per_row],
+    ["Sensor rows left unchanged",row.uncorrected_row_count],
+  ])}`;
+  html+=table(["Phase","OB samples/row","Rows corrected","Outliers rejected","RMS offset (code)"],
+    (row.phases??[]).map((p)=>[p.phase,p.ob_samples_per_row,p.rows_corrected,p.outlier_samples_rejected,number(p.rms_offset_code)]));
+  if (row.uncorrected_row_count) {
+    const listed=(row.rows_not_corrected??[]).join(", ");
+    html+=`<p>${row.uncorrected_row_count} sensor row(s) kept as captured: ${esc(listed)}${row.uncorrected_row_count>(row.rows_not_corrected??[]).length?" …":""}</p>`;
+  }
+  for (const warning of row.warnings??[]) html+=`<p>${esc(warning)}</p>`;
+  return html;
 }
 
 export function sensorEvidence(kind, report) {
@@ -175,8 +195,16 @@ export function sensorEvidence(kind, report) {
   } else if (kind==="exposure") {
     body = table(["Phase","Sites","Near saturation ≥98%","Clipped","Headroom (EV)"],report.phases.map((p)=>[p.phase,p.samples,p.levels.find((b)=>b.threshold===.98)?.count??0,p.levels.find((b)=>b.threshold===1)?.count??0,number(p.headroom_stops_p99_5,3)]));
   } else if (kind==="profile") {
-    graph = chart("Line median profile",report.traces.map((p)=>({name:p.phase,points:p.positions.map((x,i)=>[x,p.medians[i]])})));
-    body = `<p>Sensor ${esc(report.axis)} · ${esc(report.unit)}</p>`;
+    const traces=report.traces.map((p)=>({name:p.phase,points:p.positions.map((x,i)=>[x,p.medians[i]])}));
+    let calibrated="";
+    if (report.calibrated) {
+      for (const p of report.calibrated.traces) {
+        traces.push({name:`${p.phase} calibrated`,color:PHASE_COLORS[p.phase],dash:[5,3],points:p.positions.map((x,i)=>[x,p.medians[i]])});
+      }
+      calibrated=rowOffsetEvidence(report.calibrated.row_offset);
+    }
+    graph = chart("Line median profile",traces);
+    body = `<p>Sensor ${esc(report.axis)} · ${esc(report.unit)}</p>${calibrated}`;
   } else if (kind==="banding") {
     body = table(["Phase","RMS code","Peak period (sites)","Amplitude"],report.phases.map((p)=>[p.phase,number(p.rms_code),number(p.peak_periods[0]?.period_sites),number(p.peak_periods[0]?.amplitude)])) + `<p>${esc(report.warning)}</p>`;
   } else if (kind==="spatial-noise"||kind==="paired-noise") {

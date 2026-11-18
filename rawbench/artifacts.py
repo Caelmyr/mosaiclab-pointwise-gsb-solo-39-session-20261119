@@ -268,9 +268,13 @@ def measurement_csv(kind: str, report: dict, name: str) -> Artifact:
                 writer.writerow([channel["phase"], channel["edges"][i], channel["edges"][i + 1], total])
     elif kind == "profile":
         writer.writerow(["phase", "sensor_coordinate", "median", "robust_sigma", "samples"])
-        for line in report["traces"]:
-            for i, x in enumerate(line["positions"]):
-                writer.writerow([line["phase"], x, line["medians"][i], line["robust_sigma"][i], line["samples"][i]])
+        sections = [("", report["traces"])]
+        if report.get("calibrated"):
+            sections.append(("calibrated ", report["calibrated"]["traces"]))
+        for prefix, traces in sections:
+            for line in traces:
+                for i, x in enumerate(line["positions"]):
+                    writer.writerow([prefix + line["phase"], x, line["medians"][i], line["robust_sigma"][i], line["samples"][i]])
     elif kind == "banding":
         writer.writerow(["phase", "period_sites", "cycles_per_site", "amplitude_code", "above_floor_db"])
         for phase in report["phases"]:
