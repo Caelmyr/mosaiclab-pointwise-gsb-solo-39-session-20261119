@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#171b19">
+<title>MosaicLab — RAW sensor workbench</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="module" src="/static/main.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><strong>MosaicLab</strong><small>RAW sensor workbench</small></div></div>
+  <label class="workbench-picker"><span>Workbench</span><select id="projects" aria-label="Workbench"></select></label>
+  <button id="new-project" class="quiet">＋ Workbench</button>
+  <div class="top-right"><span id="connection"><i></i> Local workspace</span><button id="download" class="accent" disabled>↓ Export</button></div>
+</header>
+<main>
+  <section class="banner">
+    <div><div class="breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><span id="project-kind">Sensor capture</span></div>
+    <h1 id="project-name">MosaicLab</h1><p id="project-note"></p></div>
+    <div class="banner-actions"><button id="project-menu" class="quiet">Project actions</button><button id="save" class="quiet" disabled>Save inspection</button></div>
+  </section>
+  <div class="workspace">
+    <aside class="sidebar">
+      <div class="section-header"><h2>Captures</h2><button id="import" class="icon" title="Import capture" aria-label="Import capture">＋</button></div>
+      <div id="frames" class="frames" aria-label="Capture list"></div>
+      <div id="metadata" class="metadata"></div>
+      <div class="demo-box"><div><span class="demo-dot"></span><strong>Synthetic lab</strong></div><p>Open a controlled capture with matching dark, flat and defect references.</p><button id="samples" class="quiet">Browse sample scenes <span aria-hidden="true">↗</span></button></div>
+    </aside>
+    <section class="viewer">
+      <nav class="tabs" id="tabs" aria-label="Workbench view">
+        <button data-tab="develop" class="active">Develop</button><button data-tab="inspect">Inspect</button><button data-tab="compare">Compare</button><button data-tab="history">History</button>
+      </nav>
+      <div class="canvas-bar" id="canvas-bar">
+        <select id="layer" aria-label="Image layer">
+          <option value="developed">Developed RGB</option><option value="mosaic">RAW intensity</option><option value="phase-color">Bayer phase color</option><option value="phase-planes">Separate CFA planes</option><option value="clipping">Exposure map</option><option value="calibration">Calibration map</option>
+        </select>
+        <span class="bar-gap"></span>
+        <div class="modes" aria-label="Cursor tools">
+          <button id="probe-tool" title="Probe a sensor site" class="active">Probe</button><button id="roi-tool" title="Draw a region">Region</button>
+        </div>
+        <button id="zoom" class="quiet" title="Toggle 1:1 preview zoom">Fit</button>
+      </div>
+      <div id="screen" class="screen"><div id="empty" class="empty"><span class="empty-symbol">◇</span><strong>Loading workbench</strong></div><div id="photo" class="photo" hidden><img id="preview" alt="Selected sensor capture"><div id="roi-overlay" class="roi-overlay" hidden></div><div id="probe-overlay" class="probe-overlay" hidden></div></div></div>
+      <div id="image-info" class="image-info"></div>
+      <section id="evidence" class="evidence" hidden></section>
+      <section id="history" class="history" hidden></section>
+    </section>
+    <aside class="controls" id="controls"></aside>
+  </div>
+</main>
+<footer><span>MosaicLab</span><span>Native Bayer coordinates · local processing</span></footer>
+<dialog id="dialog"></dialog>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

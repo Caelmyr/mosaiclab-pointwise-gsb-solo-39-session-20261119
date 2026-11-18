@@ -1,0 +1,14 @@
+name: solo42-mosaiclab
+services:
+  workbench:
+    build: .
+    image: solo42-mosaiclab:1.0
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:${MOSAICLAB_PORT:-18942}:18942"
+    volumes:
+      - mosaiclab-data:/data
+    init: true
+    restart: unless-stopped
+volumes:
+  mosaiclab-data:
